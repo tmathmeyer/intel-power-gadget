@@ -51,6 +51,19 @@ uint64_t num_pkg_threads = 0;  // number of physical threads per package
 uint64_t num_pkg_cores = 0;    // number of cores per package
 uint64_t os_cpu_count = 0;     // numbeer of OS cpus
 
+/* Wraparound values for total energy consumed and accumulated throttled time.
+ * These values are computed within init_rapl(). */
+double MAX_ENERGY_STATUS_JOULES;   /* default: 65536 */
+double MAX_THROTTLED_TIME_SECONDS; /* default: 4194304 */
+
+double GetMaxEnergyStatusJoules() {
+    return MAX_ENERGY_STATUS_JOULES;
+}
+
+double GetMaxThrottledTimeSeconds() {
+    return MAX_THROTTLED_TIME_SECONDS;
+}
+
 APIC_ID_t *os_map;
 APIC_ID_t **pkg_map;
 
@@ -280,6 +293,8 @@ init_rapl()
     case 0x306c0: /* Haswell:            0x306cX (Tables 35:11,12,14,17,19) */
     case 0x306a0: /* IvyBridge client:   0x306aX (Tables 35:11,12,14) */
     case 0x206a0: /* SandyBridge client: 0x206aX (Tables 35:11,12) */
+    case 0x806e0:
+    case 0x406e0:
         msr_support_table[MSR_RAPL_POWER_UNIT & MSR_SUPPORT_MASK]          = 1;
         msr_support_table[MSR_RAPL_PKG_POWER_LIMIT & MSR_SUPPORT_MASK]     = 1;
         msr_support_table[MSR_RAPL_PKG_ENERGY_STATUS & MSR_SUPPORT_MASK]   = 1;
@@ -322,7 +337,15 @@ init_rapl()
     }
 
     err = read_rapl_units();
+    if (0 != err) {
+        fprintf(stderr, "Could not read RAPL power units, are you running as root?\n");
+        return err;
+    }
     err += build_topology();
+    if (0 != err) {
+        fprintf(stderr, "Could not build topology\n");
+        return err;
+    }
 
     /* 32 is the width of these fields when they are stored */
     MAX_ENERGY_STATUS_JOULES = (double)(RAPL_ENERGY_UNIT * (pow(2, 32) - 1));

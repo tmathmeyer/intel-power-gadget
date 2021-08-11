@@ -31,6 +31,30 @@ uint64_t      delay_us = 1000000;
 double        duration = 3600.0;
 double        delay_unit = 1000000.0;
 
+enum fields {
+    systime =      0x1 << 0,
+    rdtsc =        0x1 << 1,
+    elapsed =      0x1 << 2,
+    ia_freq =      0x1 << 3,
+    powerW =       0x1 << 4,
+    energyJ =      0x1 << 5,
+    energyW =      0x1 << 6,
+    ia_powerW =    0x1 << 7,
+    ia_energyJ =   0x1 << 8,
+    ia_energyW =   0x1 << 9,
+    gt_powerW =    0x1 << 10,
+    gt_energyJ =   0x1 << 11,
+    gt_energyW =   0x1 << 12,
+    dram_powerW =  0x01 << 13,
+    dram_energyJ = 0x01 << 14,
+    dram_energyW = 0x01 << 15,
+
+    ENUM_SIZE = 16
+};
+
+uint64_t fields_to_render = 0;
+
+
 double
 get_rapl_energy_info(uint64_t power_domain, uint64_t node)
 {
@@ -81,6 +105,42 @@ convert_time_to_sec(struct timeval tv)
     return elapsed_time;
 }
 
+typedef
+struct header_support_pair_s {
+    char* name;
+    int hsd;
+} header_support_pair;
+
+header_support_pair column_headers[ENUM_SIZE] = {
+    {.name="System Time", .hsd=-1},
+    {.name="RDTSC", .hsd=-1},
+    {.name="Elapsed Time", .hsd=-1},
+    {.name="IA Frequency (%d)", .hsd=RAPL_PP0},
+
+    {.name="Processor Power (%d) (Watts)", .hsd=RAPL_PKG},
+    {.name="Cumulative Processor Energy (%d) (Joules)", .hsd=RAPL_PKG},
+    {.name="Cumulative Processor Energy (%d) (mWh)", .hsd=RAPL_PKG},
+
+    {.name="IA Power (%d) (Watts)", .hsd=RAPL_PP0},
+    {.name="Cumulative IA Energy (%d) (Joules)", .hsd=RAPL_PP0},
+    {.name="Cumulative IA Energy (%d) (mWh)", .hsd=RAPL_PP0},
+
+    {.name="GT Power (%d) (Watts)", .hsd=RAPL_PP1},
+    {.name="Cumulative GT Energy (%d) (Joules)", .hsd=RAPL_PP1},
+    {.name="Cumulative GT Energy (%d) (mWh)", .hsd=RAPL_PP1},
+
+    {.name="DRAM Power (%d) (Watts)", .hsd=RAPL_DRAM},
+    {.name="Cumulative DRAM Energy (%d) (Joules)", .hsd=RAPL_DRAM},
+    {.name="Cumulative DRAM Energy (%d) (mWh)", .hsd=RAPL_DRAM},
+};
+
+int index_from_field(int field) {
+    for (int i=0; i<ENUM_SIZE; i++)
+        if (0x1<<i == field)
+            return i;
+    return -1;
+}
+
 
 void
 do_print_energy_info()
@@ -110,18 +170,28 @@ do_print_energy_info()
     setbuf(stdout, NULL);
 
     /* Print header */
-    fprintf(stdout, "System Time,RDTSC,Elapsed Time (sec),");
+    int print_comma = 0;
+    #define COMMA() if (print_comma) fprintf(stdout, ", "); print_comma = 1;
+
+    printf("%x\n", fields_to_render);
     for (i = node; i < num_node; i++) {
-        fprintf(stdout, "IA Frequency_%d (MHz),",i);
-        if(is_supported_domain(RAPL_PKG))
-            fprintf(stdout,"Processor Power_%d (Watt),Cumulative Processor Energy_%d (Joules),Cumulative Processor Energy_%d (mWh),", i,i,i);
-        if(is_supported_domain(RAPL_PP0))
-            fprintf(stdout, "IA Power_%d (Watt),Cumulative IA Energy_%d (Joules),Cumulative IA Energy_%d(mWh),", i,i,i);
-        if(is_supported_domain(RAPL_PP1))
-            fprintf(stdout, "GT Power_%d (Watt),Cumulative GT Energy_%d (Joules),Cumulative GT Energy_%d(mWh)", i,i,i);
-        if(is_supported_domain(RAPL_DRAM))
-            fprintf(stdout, "DRAM Power_%d (Watt),Cumulative DRAM Energy_%d (Joules),Cumulative DRAM Energy_%d(mWh),", i,i,i);
+        for (int ent=0; ent<=ENUM_SIZE; ent++) {
+            if (!(0x1<<ent & fields_to_render))
+                continue;
+            if (column_headers[ent].hsd == -1) {
+                if (node == i) {
+                    COMMA();
+                    fprintf(stdout, column_headers[ent].name);
+                }
+            } else {
+                if (is_supported_domain(column_headers[ent].hsd)) {
+                    COMMA();
+                    fprintf(stdout, column_headers[ent].name, i);
+                }
+            }
+        } 
     }
+
     fprintf(stdout, "\n");
 
     /* Read initial values */
@@ -154,7 +224,7 @@ do_print_energy_info()
 
                     /* Handle wraparound */
                     if (delta < 0) {
-                        delta += MAX_ENERGY_STATUS_JOULES;
+                        delta += GetMaxEnergyStatusJoules();
                     }
 
                     prev_sample[i][domain] = new_sample;
@@ -175,14 +245,52 @@ do_print_energy_info()
         convert_time_to_string(tv, time_buffer);
 
         read_tsc(&tsc);
-        fprintf(stdout,"%s,%lu,%.4lf,", time_buffer, tsc, total_elapsed_time);
+
+
+        print_comma = 0;
+        if (0x1<<0 & fields_to_render) {
+            COMMA();
+            fprintf(stdout, "%s", time_buffer);
+        }
+
+        if (0x1<<1 & fields_to_render) {
+            COMMA();
+            fprintf(stdout, "%lu", tsc);
+        }
+        
+        if (0x1<<2 & fields_to_render) {
+            COMMA();
+            fprintf(stdout, "%.4lf", total_elapsed_time);
+        }
+
         for (i = node; i < num_node; i++) {
-            get_pp0_freq_mhz(i, &freq);
-            fprintf(stdout, "%lu,", freq);
             for (domain = 0; domain < RAPL_NR_DOMAIN; ++domain) {
-                if(is_supported_domain(domain)) {
-                    fprintf(stdout, "%.4lf,%.4lf,%.4lf,",
-                            power_watt[i][domain], cum_energy_J[i][domain], cum_energy_mWh[i][domain]);
+                if (0x1<<3 & fields_to_render) {
+                    get_pp0_freq_mhz(i, &freq);
+                    COMMA();
+                    fprintf(stdout, "%lu", freq);
+                }
+
+                if (!is_supported_domain(domain))
+                    continue;
+
+                int pow = domain * 3 + 4;
+                int eng = domain * 3 + 5;
+                int wat = domain * 3 + 6;
+
+                if (0x1 << pow & fields_to_render) {
+                    COMMA();
+                    fprintf(stdout, "%.4lf", power_watt[i][domain]);
+                }
+
+                if (0x1 << eng & fields_to_render) {
+                    COMMA();
+                    fprintf(stdout, "%.4lf", cum_energy_J[i][domain]);
+                }
+
+                if (0x1 << wat & fields_to_render) {
+                    COMMA();
+                    fprintf(stdout, "%.4lf", cum_energy_mWh[i][domain]);
                 }
             }
         }
@@ -234,6 +342,28 @@ usage()
 }
 
 
+void show_fopts() {
+    fprintf(stdout, "\"-f\" options (comma separated):\n");
+    #define APPLY(ENUM) printf("\t%s: %s\n", #ENUM, column_headers[index_from_field(ENUM)].name);
+    APPLY(systime);
+    APPLY(rdtsc);
+    APPLY(elapsed);
+    APPLY(ia_freq);
+    APPLY(powerW);
+    APPLY(energyJ);
+    APPLY(energyW);
+    APPLY(ia_powerW);
+    APPLY(ia_energyJ);
+    APPLY(ia_energyW);
+    APPLY(gt_powerW);
+    APPLY(gt_energyJ);
+    APPLY(gt_energyW);
+    APPLY(dram_powerW);
+    APPLY(dram_energyJ);
+    APPLY(dram_energyW);
+    #undef APPLY
+}
+
 int
 cmdline(int argc, char **argv)
 {
@@ -242,7 +372,7 @@ cmdline(int argc, char **argv)
 
     progname = argv[0];
 
-    while ((opt = getopt(argc, argv, "e:d:")) != -1) {
+    while ((opt = getopt(argc, argv, "e:d:f:F")) != -1) {
         switch (opt) {
         case 'e':
             delay_ms_temp = atoi(optarg);
@@ -264,6 +394,40 @@ cmdline(int argc, char **argv)
             usage();
             exit(0);
             break;
+        case 'f':
+            char *cop = strdup(optarg);
+            char *each = strtok(cop, ",");
+            while (each != NULL) {
+                #define APPLY(ENUM) if (chk && strcmp(each, #ENUM) == 0) {chk = 0; fields_to_render |= ENUM;}
+                int chk = 1;
+                APPLY(systime);
+                APPLY(rdtsc);
+                APPLY(elapsed);
+                APPLY(ia_freq);
+                APPLY(powerW);
+                APPLY(energyJ);
+                APPLY(energyW);
+                APPLY(ia_powerW);
+                APPLY(ia_energyJ);
+                APPLY(ia_energyW);
+                APPLY(gt_powerW);
+                APPLY(gt_energyJ);
+                APPLY(gt_energyW);
+                APPLY(dram_powerW);
+                APPLY(dram_energyJ);
+                APPLY(dram_energyW);
+                #undef APPLY
+                if (chk) {
+                    printf("unknown field: '%s'\n", each);
+                    show_fopts();
+                    return -1;
+                }
+                each = strtok(NULL, ",");
+            }
+            free(cop);
+            break;
+        case 'F':
+            show_fopts();
         default:
             usage();
             return -1;
